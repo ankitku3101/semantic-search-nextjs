@@ -7,7 +7,7 @@ import { timeout } from './config'
 import { log } from "console";
 import { metadata } from "./app/layout";
 
-export const createPinecodeIndex = async (
+export const createPineconeIndex = async (
     client,
     indexName,
     vectorDimension
@@ -65,6 +65,55 @@ export const updatePinecone = async (client, indexName, docs) => {
                     txtPath: txtPath    
                 }
             }
+            batch = [...batch, vector]
+            if(batch.length === batchSize || idx === chunks.length -1) {
+                await index.upsert ({
+                    upsertRequest: {
+                        vectors: batch
+                    },
+                })
+                batch = [];
+            }
         }
+    }
+}
+
+export const queryPineconeVectorStoreAndQueryLLM = async (
+    client,
+    indexName,
+    question
+) => {
+    console.log('Querying Pinecone vector store... ')
+
+    const index = client.Index(indexName)
+
+    const queryEmbedding = await new OpenAIEmbeddings().embedQuery(question)
+
+    let queryResponse = await index.query({
+        queryRequest: {
+            topK: 10,
+            vector: queryEmbedding,
+            includeMetadata: true,
+            includeValues: true,
+        }
+    })
+
+    console.log(`Found ${queryResponse.matches.length} matches...`);
+    console.log(`Asking question ${question}...`);
+    
+    if (queryResponse.matches.length) {
+        const llm = new OpenAI({})
+        const chain = loadQAStuffChain(llm)
+        const concatenatedPageContent = queryResponse.matches
+            .map((match) => match.metadata.pagecontent)
+            .join(" ")
+        const result = await chain.invoke({
+            input_documents: [new Document({ pageContent: concatenatedPageContent})],
+            question: question,
+        })
+        console.log(`Answer: ${result.text}`);
+        return result.text 
+    } else {
+        console.log('Since there are no matches, GPT-3 will not be queried.');
     }
 }
